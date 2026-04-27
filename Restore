@@ -1,0 +1,103 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'BACKUP_FILE', defaultValue: '', description: 'Optional: Specify backup file (leave empty for latest)')
+    }
+
+    environment {
+        S3_BUCKET = 's3://jenkinsbackupsuvam/backups2'
+        RESTORE_DIR = '/tmp/jenkins-restore'
+        JENKINS_HOME = '/var/lib/jenkins'
+    }
+
+    stages {
+
+        stage('Prepare Workspace') {
+            steps {
+                echo "Preparing restore directory..."
+                sh '''
+                rm -rf ${RESTORE_DIR}
+                mkdir -p ${RESTORE_DIR}
+                '''
+            }
+        }
+
+        stage('Download Backup from S3') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                  credentialsId: 'aws-s3-backup-creds']]) {
+
+                    script {
+                        if (params.BACKUP_FILE?.trim()) {
+                            echo "Downloading specified backup: ${params.BACKUP_FILE}"
+                            sh """
+                            aws s3 cp ${S3_BUCKET}/${params.BACKUP_FILE} ${RESTORE_DIR}/backup.tar.gz
+                            """
+                        } else {
+                            echo "Fetching latest backup from S3..."
+
+                            sh """
+                            aws s3 ls ${S3_BUCKET}/ | sort | tail -n 1 | awk '{print \$4}' > latest.txt
+                            LATEST_FILE=\$(cat latest.txt)
+
+                            if [ -z "\$LATEST_FILE" ]; then
+                                echo "No backup found!" && exit 1
+                            fi
+
+                            aws s3 cp ${S3_BUCKET}/\$LATEST_FILE ${RESTORE_DIR}/backup.tar.gz
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Stop Jenkins') {
+            steps {
+                echo "Stopping Jenkins service..."
+                sh 'sudo systemctl stop jenkins'
+            }
+        }
+
+        stage('Restore Jenkins Data') {
+            steps {
+                echo "Restoring Jenkins home..."
+
+                sh '''
+                # Backup existing Jenkins home (safety rollback)
+                sudo cp -r ${JENKINS_HOME} ${JENKINS_HOME}_backup_$(date +%F-%H%M)
+
+                # Clean current Jenkins home
+                sudo rm -rf ${JENKINS_HOME}/*
+
+                # Extract backup
+                sudo tar -xzf ${RESTORE_DIR}/backup.tar.gz -C /
+
+                # Fix ownership
+                sudo chown -R jenkins:jenkins ${JENKINS_HOME}
+                '''
+            }
+        }
+
+        stage('Start Jenkins') {
+            steps {
+                echo "Starting Jenkins..."
+                sh 'sudo systemctl start jenkins'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Jenkins restored successfully!"
+        }
+        failure {
+            echo "❌ Restore failed. Check logs carefully before retrying."
+        }
+        always {
+            echo "Cleaning temp files..."
+            sh 'rm -rf ${RESTORE_DIR} latest.txt || true'
+        }
+    }
+}
