@@ -5,7 +5,7 @@
         // Correct way to bind AWS credentials in a declarative pipeline
         AWS_ACCESS_KEY_ID     = credentials('aws-s3-backup-creds')
         AWS_SECRET_ACCESS_KEY = credentials('aws-s3-backup-creds')
-        S3_BUCKET             = 's3://my-jenkins-backup-bucket-unique-id'
+        S3_BUCKET             = 's3://jenkinsbackupsuvam'
     }
 
     stages {
